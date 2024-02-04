@@ -82,6 +82,8 @@ class MegatronBertModel(MegatronBaseModel):
             raise ImportError(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
+        
+        self.in_valid = False
         self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
         self.cfg = cfg
 
@@ -473,8 +475,11 @@ class MegatronBertModel(MegatronBaseModel):
                 torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
     def validation_step(self, dataloader_iter, batch_idx):
+        self.setup_validation_data(self.cfg.data)
         # Check if iterator is exhausted
+        self.in_valid = True
         dataloader_iter, done = self._val_iterator_done(dataloader_iter)
+
         if done:
             return
         prefix = "test" if self.trainer.testing else "val"
@@ -494,6 +499,7 @@ class MegatronBertModel(MegatronBaseModel):
             seq_length=seq_length,
             micro_batch_size=self.cfg.micro_batch_size,
         )
+        self.in_valid = False
 
         if losses_reduced_per_micro_batch:
             loss_tensors_list = [loss_reduced['loss'] for loss_reduced in losses_reduced_per_micro_batch]

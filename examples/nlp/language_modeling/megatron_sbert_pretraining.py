@@ -21,7 +21,11 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRest
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+import torch
 
+def average_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+    return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
 
 @hydra_runner(config_path="conf", config_name="megatron_bert_config")
 def main(cfg) -> None:
@@ -43,6 +47,19 @@ def main(cfg) -> None:
     model_cfg.data.data_prefix = cfg.model.data.data_prefix
     model_cfg.micro_batch_size = cfg.model.micro_batch_size
     model_cfg.global_batch_size = cfg.model.global_batch_size
+    model_cfg.optim.lr = cfg.model.optim.lr
+    model_cfg.optim.sched.min_lr = cfg.model.optim.sched.min_lr
+    model_cfg.data.dataloader_type = "single"
+    model_cfg.optim.sched.warmup_steps = cfg.model.optim.sched.warmup_steps
+    model_cfg.encoder_seq_length = cfg.model.encoder_seq_length
+    model_cfg.tokenizer.library = cfg.model.tokenizer.library
+    model_cfg.tokenizer.type = cfg.model.tokenizer.type
+    model_cfg.data.data_prefix = cfg.model.data.data_prefix
+    model_cfg.tokenizer.do_lower_case = cfg.model.tokenizer.do_lower_case
+    model_cfg.data.evaluation_sample_size = cfg.model.data.evaluation_sample_size
+    model_cfg.data.hard_negatives_to_train = cfg.model.data.hard_negatives_to_train
+    model_cfg.data.evaluation_steps = cfg.model.data.evaluation_steps
+    model_cfg.optim.weight_decay = 0.01
     assert (
         model_cfg.micro_batch_size * cfg.trainer.devices == model_cfg.global_batch_size
     ), "Gradiant accumulation is not supported for contrastive learning yet"

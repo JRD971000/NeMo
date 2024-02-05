@@ -17,7 +17,7 @@ import json
 import os
 import random
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+import copy
 import torch
 import torch.nn.functional as F
 from omegaconf.dictconfig import DictConfig
@@ -158,7 +158,8 @@ class MultiplePositivesNegativesDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, item):
-        example = self.data[item]
+
+        example = copy.deepcopy(self.data[item])
         question = f'{self.query_prefix} {example["question"]}'.strip()
         texts = [question]
 
@@ -539,7 +540,7 @@ class MegatronSBertModel(MegatronBertModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
 
         super().__init__(cfg, trainer=trainer)
-        self.stop_criteria=False
+
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(label_smoothing=cfg.get('label_smoothing', 0.0))
         softmax_temp = cfg.get('softmax_temp', 0.05)
         self.scale = 1.0 / softmax_temp
@@ -605,14 +606,6 @@ class MegatronSBertModel(MegatronBertModel):
 
         train_file_path = self.cfg.data.data_prefix
 
-        # with open(train_file_path) as f:
-        #     train_data = json.load(f)
-
-        # random_seed=42
-        # set_seed(random_seed)
-        # random.shuffle(train_data)
-
-        # self.train_data = train_data
         train_data = self.train_data
 
         
@@ -641,7 +634,6 @@ class MegatronSBertModel(MegatronBertModel):
 
                 valid_data = train_data[-evaluation_sample_size:]
                 train_data = train_data[:-evaluation_sample_size]
-
 
             if evaluation_sample_size:
                 self._validation_ds = MultiplePositivesNegativesDataset(
@@ -762,6 +754,7 @@ class MegatronSBertModel(MegatronBertModel):
             raise ValueError('cfg.data.dataloader_type not found. Must be "single" or "cyclic"')
 
         # Torch dataloader.
+
         dataloader = torch.utils.data.DataLoader(
             dataset,
             shuffle=False,
@@ -829,9 +822,7 @@ class MegatronSBertModel(MegatronBertModel):
         return sentence_features
 
     def training_step(self, dataloader_iter, batch_idx):
-        self.in_valid = False
-        self.valid_counter = 0
-        self.stop_criteria = True
+
         self._optimizer.zero_grad()
 
         if self.with_distributed_adam:
@@ -927,12 +918,7 @@ class MegatronSBertModel(MegatronBertModel):
         return loss_mean[0]
     
     def validation_step(self, dataloader_iter, batch_idx):
-        self.build_train_valid_test_datasets()
-        # self.setup_training_data(self.cfg.data)
-        self.setup_validation_data(self.cfg.data)
-
         # Check if iterator is exhausted
-        self.in_valid = True
         dataloader_iter, done = self._val_iterator_done(dataloader_iter)
 
         if done:
@@ -954,7 +940,6 @@ class MegatronSBertModel(MegatronBertModel):
             seq_length=seq_length,
             micro_batch_size=self.cfg.micro_batch_size,
         )
-        self.in_valid = False
 
         if losses_reduced_per_micro_batch:
             loss_tensors_list = [loss_reduced['loss'] for loss_reduced in losses_reduced_per_micro_batch]
@@ -974,12 +959,6 @@ class MegatronSBertModel(MegatronBertModel):
                 batches = next(
                     dataloader_iter
                 ) 
-                if self.in_valid:
-                    
-                    for ccc, ddd in enumerate(self._validation_dl):
-                        if ccc == self.valid_counter:
-                            batches = ddd
-                    self.valid_counter += 1
                 # for each element in batches, there should be 1 anchor, 1 positive, and n negatives
                 # In Bert dataset (like Pile), every batch has tokens, types, sentence_order, loss_mask, lm_labels, padding_mask
                 # For Sbert, we want the batch to be a list of [anchors, positives, negatives1, negatives2, ..., ] so that every of the anchors/positives/negatives are the same as the batch in pile dataset
@@ -1028,140 +1007,13 @@ class MegatronSBertModel(MegatronBertModel):
 
             if not self.cfg.bert_binary_head:
                 types = None
-
+            
             forward_args = [
                 {"input_ids": tokens, "token_type_ids": types, "attention_mask": padding_mask}
                 for tokens, padding_mask, types in zip(
                     tokens_batch, padding_mask_batch, types_batch
                 )
             ]
-            if self.in_valid:
-                # print(f"forward_args = {forward_args}")
-                from torch import tensor
-    #             forward_args = [{'input_ids': tensor([[  101, 23032,  1024,  2106,  1996,  8136, 27826,  2208,  2272,  2041,
-    #       2077,  1996,  3185,   102]], device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]], device='cuda:0')}, {'input_ids': tensor([[  101,  6019,  1024,  8136, 27826,  1010,  2036,  2124,  2004, 13679,
-    #      28983,  1024,  8136, 27826,  2090,  2541,  1998,  2289,  1010,  2003,
-    #       1037,  2865,  6329,  2008,  7940,  2007,  2019,  2895,  1011,  6172,
-    #       2678,  2208,  2186,  2580,  2011,  2329, 10355,  2194,  4563,  2640,
-    #       1012,  3839,  3079,  2011,  1041, 13820,  2015,  9123,  1010,  2059,
-    #       2011,  2675,  4372,  7646,  2044,  2037,  7654,  1997,  1041, 13820,
-    #       2015,  1999,  2268,  1010,  1996,  6329,  7679,  2006,  1037,  7214,
-    #       2329, 18821, 13679, 28983,  1010,  2040,  7930,  2105,  1996,  2088,
-    #       6575,  2005,  2439, 25762,  1998,  1999,  8873,  7096, 15172,  4795,
-    #      16623,  1998,  8435,  1012,  1996, 11247,  3227,  7679,  2105,  2895,
-    #       1011,  6172,  8993,  1997, 10058,  1010, 13729, 19672,  1010,  6583,
-    #       5737, 16961, 10420, 10058,  3561,  2007, 16735,  1010,  1998,  3554,
-    #       3365,  6716,  1012,  3176,  2865,  2038,  4961,  2039,  2105,  1996,
-    #       4323,  1999,  1996,  2433,  1997,  2143, 17241,  1010,  5888,  1998,
-    #       6002,  1012,   102]], device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
-    #    device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
-    #    device='cuda:0')}, {'input_ids': tensor([[  101,  6019,  1024,  4125,  1997,  1996,  8136, 27826,  2001,  2207,
-    #       2006,  2184,  2281,  2325,  1010,  1998,  1996,  3645,  2544,  2001,
-    #       2207,  2006,  2654,  2254,  2355,  1012,  7513,  4835,  2001,  1996,
-    #       2208,  1005,  1055,  6674,  2005, 12202,  9475,  1998, 12202,  2028,
-    #       1012,  2019,  2324,  1011,  3277,  5021,  2186,  1010,  8136, 27826,
-    #       1010,  2211,  4772,  1999,  2220,  2297,  1012,  2550,  2011,  2601,
-    #       3586,  5888,  1998,  2517,  2011, 10975,  4017, 20318,  2102,  1998,
-    #      18576, 14072,  1010,  1996,  5888,  2958,  2094,  1996,  6578,  2090,
-    #       1996,  2286,  2128, 27927,  1998,  4125,  1997,  1996,  8136, 27826,
-    #       1998,  4541,  1996,  6438,  1997,  2070,  3905,  3494,  1999,  1996,
-    #       8297,  1012,  7513,  2207,  1037,  4125,  1997,  1996,  8136, 27826,
-    #      12202,  2028, 14012,  1010,  2164,  2019, 12202,  2028, 10122,  1010,
-    #       1037,  3642,  2005,  8136, 27826,  1024, 15764,  3179,  1998,  1996,
-    #       2208,  1012,  1037, 10018,  1005,  1055,  3179,  2443,  1037,  2260,
-    #       1011,  4960,  6231,  1997, 13679,  1010,  1037,  3886,  8654,  1010,
-    #       1037, 12323, 13016,  1998,  1037, 15059,  1997, 13679,  1005,  1055,
-    #       3485,  1012,  1037,  2161,  3413,  2443,  1996,  2918,  2208,  1010,
-    #       3176, 22054,  1010,  4255,  1998,  5590,  5329,  1010,  1998,  3229,
-    #       2000, 26720,  4180,  1012,  2399, 14399,  3653,  8551,  2545,  2018,
-    #       7262,  3229,  2000,  1996,  4151,  2543,  4003,  5308,  1010,  2029,
-    #       2064,  2022,  2109,  1999,  1996,  2208,  1005,  1055, 15014,  5549,
-    #       1012,  7513,  2444,  1011, 18498,  1037,  7691,  4908,  5821,  2724,
-    #       2006, 19435,  1012,  2694,  1012,  2809, 10584,  3061,  1999,  2392,
-    #       1997,  1037,  2148, 24298,  2395,  4908,  2020, 13532,  2000,  2367,
-    #       8401,  4633,  3785,  1010,  2029,  2020,  5444,  2011, 19435,  1005,
-    #       1055,  7193,  1012,  1996, 10832, 16762,  1996,  4633,  6493,  2363,
-    #       1037,  1036,  1036,  8136, 27826,  1011, 11773,  4440,  1005,  1005,
-    #       2867,  2071,  7796,  1999,  1011,  2208, 19054,  2011,  8019,  1006,
-    #       1998, 21935,  2007,  1007, 19435,  2444,  1011, 11058,  1999,  5590,
-    #       5549,  1012,   102]], device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1]], device='cuda:0')}, {'input_ids': tensor([[  101,  6019,  1024,  8136, 27826,  1024,  5315,  2003,  1037,  2289,
-    #       2895,  1011,  6172,  2678,  2208,  1010,  2112,  1997,  1996,  8136,
-    #      27826,  2186,  1012,  2009,  2003,  1037, 12661,  1013,  2128,  1011,
-    #      16603,  1997,  1996,  2034,  2678,  2208,  1999,  1996,  2186,  1010,
-    #       1996,  2434,  2727,  8136, 27826,  1012,  2009,  3594,  2019,  5301,
-    #       2544,  1997,  1996,  5722,  2208,  3194,  1010,  1998,  2009,  2950,
-    #       2035,  1997,  1996,  2434, 10058,  2013,  8136, 27826,  1012,   102]],
-    #    device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
-    #    device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
-    #    device='cuda:0')}, {'input_ids': tensor([[  101,  6019,  1024,  1996,  2208,  2001,  2623,  2000,  2022,  2405,
-    #       2011, 27681,  4091,  2399,  2005,  2195, 22659,  2823,  2105,  1999,
-    #       2760,  2164,  9160,  1018,  1010, 12202,  2028,  1010,  2047, 10022,
-    #       7605,  2015,  1010,  1998, 10022,  6942,  1012,  1010,   102]],
-    #    device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]], device='cuda:0')}, {'input_ids': tensor([[  101,  6019,  1024,  1996,  2143,  2441,  2006,  2281,  1019,  1010,
-    #       2432,  1010,  2004, 14255, 18684,  2099,  1005,  1055,  2034,  2143,
-    #       2000,  2022,  6758, 18720,  1006,  2005,  1036,  1036,  2895,  4808,
-    #       1005,  1005,  1007,  1012,  2049,  8900,  2713,  2001,  5642,  2007,
-    #       1037, 14255, 18684,  2099,  2460,  2143,  5391,  2378,  1005,  1012,
-    #       1996, 10319,  3049,  2443,  2019,  2880,  4037,  2007,  2678,  9214,
-    #       1010,  2399,  1010,  1998,  6140,  3085, 28663,  1012,  2096, 14255,
-    #      18684,  2099,  6334,  2178, 10911,  2007,  1996,  9788,  2015,  1010,
-    #       3889,  5841,  2001,  7861, 12618, 18450,  1999,  1037,  2270, 13552,
-    #       2007,  1996,  2132,  1997,  2049,  4353,  4256,  1010,  1996, 10598,
-    #       6373,  2194,  1012,  2023,  2052,  2776,  2599,  2000,  1996, 15068,
-    #      16643,  3070,  1997,  2745,  1041,  2483,  3678,  1998,  6373,  1005,
-    #       1055,  7654,  1997, 14255, 18684,  2099,  1996,  2206,  2095,  1012,
-    #        102]], device='cuda:0'), 'token_type_ids': tensor([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    #      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    #      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]], device='cuda:0')}]
-            
 
             ''' if not self.mcore_bert:
                 forward_args["checkpoint_activations_all_layers"] = checkpoint_activations_all_layers
@@ -1169,14 +1021,13 @@ class MegatronSBertModel(MegatronBertModel):
                 forward_args["token_type_ids"] = types
             else:
                 forward_args["tokentype_ids"] = types'''
-            # self.model.eval()
+
             output_tensor = None
             if self.mcore_bert:
                 output_tensor = model(**forward_args)
             else:
                 output_tensor = [self.forward(**forward_arg).permute(1,0) for forward_arg in forward_args]
-            # if self.stop_criteria:
-            #     print(f"output_tensor = {output_tensor}")
+
  
             def loss_func(output_tensor):
 
@@ -1217,8 +1068,5 @@ class MegatronSBertModel(MegatronBertModel):
         labels = torch.tensor(
             range(len(scores)), dtype=torch.long, device=scores.device
         )  # Indices of the (query, positive) pairs
-        if self.stop_criteria and self.in_valid:
-
-            print(f"val loss = {self.cross_entropy_loss(scores, labels)}")
 
         return {'lm loss': self.cross_entropy_loss(scores, labels)}
